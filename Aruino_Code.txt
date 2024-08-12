@@ -1,0 +1,158 @@
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+
+// WiFi credentials
+const char* ssid = "wifi name";
+const char* password = "";
+
+// Telegram BOT settings
+#define BOTtoken "xxxxxx"
+#define CHAT_ID "xxxxx"
+X509List cert(TELEGRAM_CERTIFICATE_ROOT);
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+
+// Accelerometer settings
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+
+// OneWire temperature sensor settings
+#define ONE_WIRE_BUS 2
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// Gas sensor pin
+const int mq7Pin = A0;
+
+// Threshold values for fall detection
+const int fallThreshold = 20;
+
+// Function prototypes
+void connectToWiFi();
+void sendMessageToTelegram(const char* message);
+void falld();
+void tempr();
+void cogas();
+float analogToPPM(int analogValue);
+
+void setup() {
+  Serial.begin(115200);
+  sensors.begin();
+
+  if (!accel.begin()) {
+    Serial.println("Could not find a valid ADXL345 sensor, check wiring!");
+    while (1);
+  }
+
+  configTime(0, 0, "pool.ntp.org");
+  client.setTrustAnchors(&cert);
+
+  connectToWiFi();
+  sendMessageToTelegram("Bot started up");
+
+  accel.setRange(ADXL345_RANGE_16_G);
+}
+
+void loop() {
+  falld();
+
+  unsigned long curt = millis();
+  static unsigned long prevt = curt;
+
+  if (curt - prevt > 2000) {
+    tempr();
+    cogas();
+    prevt = curt;
+  }
+}
+
+void connectToWiFi() {
+  Serial.print("Connecting Wifi: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void sendMessageToTelegram(const char* message) {
+  bot.sendMessage(CHAT_ID, message, "");
+  Serial.println("Message sent to Telegram");
+}
+
+void falld() {
+  sensors_event_t event;
+  accel.getEvent(&event);
+
+  float acceleration = sqrt(pow(event.acceleration.x, 2) + pow(event.acceleration.y, 2) + pow(event.acceleration.z, 2)) - 11;
+
+  Serial.print("Acceleration: ");
+  Serial.println(acceleration);
+
+  if (acceleration > fallThreshold) {
+    Serial.println("Fall detected!");
+    sendMessageToTelegram("FALL ALARM !!!!!!!!");
+    delay(2000);
+  }
+}
+
+void tempr() {
+  sensors.requestTemperatures();
+  float temperatureCelsius = sensors.getTempCByIndex(0);
+
+  if (temperatureCelsius != -127.00) {
+    Serial.print("Temperature: ");
+    Serial.print(temperatureCelsius);
+
+    if (temperatureCelsius > 45) {
+      Serial.println("FIRE ALARM !!!!!!!!");
+      sendMessageToTelegram("FIRE ALARM !!!!!!!!");
+      delay(2000);
+    }
+  } else {
+    Serial.println("Error reading temperature");
+  }
+}
+
+void cogas() {
+  int sensorValue = analogRead(mq7Pin);
+  Serial.print("_");
+  Serial.print(sensorValue);
+  Serial.print("_");
+
+  float ppm = analogToPPM(sensorValue);
+
+  Serial.print("Gas Concentration: ");
+  Serial.print(ppm);
+
+  if (ppm > 0.3) {
+    Serial.println("CO ALARM !!!!!!!!");
+    sendMessageToTelegram("CO ALARM !!!!!!!!");
+    delay(2000);
+  }
+}
+
+float analogToPPM(int analogValue) {
+  float RL_VALUE = 5.0;
+  float RO_CLEAN_AIR_FACTOR = 9.83;
+  float RO_CLEAR_AIR_VALUE = 59.0;
+  float RS_R0_Ratio = (1023.0 / analogValue) - 1.0;
+  float ppm = RS_R0_Ratio / RO_CLEAN_AIR_FACTOR;
+
+  return ppm;
+}
